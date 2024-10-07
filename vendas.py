@@ -1,0 +1,59 @@
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, sum, avg, month, year, count
+
+# Inicializando a sessão Spark
+spark = SparkSession.builder \
+    .appName("Vendas CSV para Delta Lake") \
+    .config("spark.sql.extensions", "delta.sql.DeltaSparkSessionExtensions") \
+    .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog") \
+    .getOrCreate()
+
+# 1. Lendo o arquivo 'vendas.csv' de forma eficiente
+vendas_df = spark.read \
+    .option("header", "true") \
+    .option("inferSchema", "true") \
+    .csv("vendas.csv")
+
+# Salvando o DataFrame como tabela Delta
+vendas_df.write.format("delta").mode("overwrite").save("/path/to/delta/vendas")
+
+# 2. Identificando o ‘Item Type’ mais vendido em termos de ‘Units Sold’ e ‘Sales Channel’
+item_type_most_sold = vendas_df.groupBy("Item Type", "Sales Channel") \
+    .agg(sum("Units Sold").alias("Total Units Sold")) \
+    .orderBy(col("Total Units Sold").desc()) \
+    .limit(1)
+
+item_type_most_sold.show()
+
+# 3. Determinando qual ‘Country’ e ‘Region’ teve o maior volume de vendas ‘Receita total’
+vendas_df = vendas_df.withColumn("Total Revenue", col("Units Sold") * col("Unit Price"))
+
+country_region_highest_revenue = vendas_df.groupBy("Country", "Region") \
+    .agg(sum("Total Revenue").alias("Total Revenue")) \
+    .orderBy(col("Total Revenue").desc()) \
+    .limit(1)
+
+country_region_highest_revenue.show()
+
+# 4. Calculando a média de ‘Units Sold’ mensais por ‘Item Type’
+monthly_units_sold = vendas_df.withColumn("Order Month", month("Order Date")) \
+    .withColumn("Order Year", year("Order Date")) \
+    .groupBy("Order Year", "Order Month", "Item Type") \
+    .agg(avg("Units Sold").alias("Average Units Sold")) \
+    .orderBy("Order Year", "Order Month", "Item Type")
+
+monthly_units_sold.show()
+
+# 5. Disponibilizando em tabela no banco de dados PostgreSQL
+postgres_url = "jdbc:postgresql://<host>:<port>/<dbname>"
+properties = {
+    "user": "<username>",
+    "password": "<password>",
+    "driver": "org.postgresql.Driver"
+}
+
+# Escrevendo a tabela 'vendas' no PostgreSQL
+vendas_df.write.jdbc(postgres_url, "vendas", mode="overwrite", properties=properties)
+
+# Fechando a sessão Spark
+spark.stop()
